@@ -14,13 +14,15 @@ load_dotenv()
 
 mongodb = DatabaseHandler.DatabaseHandler()
 WEB_FILES_PATH = os.environ.get('WEB_FILES_PATH', '')
+plugin_path = os.path.dirname(os.path.abspath(__file__))
+models_path = plugin_path + '/models'
 
 
 class ExtendedPluginClass(PluginClass):
     def __init__(self, path, import_name, name, description, version, author, type, settings):
         super().__init__(path, __file__, import_name, name,
                          description, version, author, type, settings)
-
+        
     def add_routes(self):
         @self.route('/bulk', methods=['POST'])
         @jwt_required()
@@ -245,6 +247,16 @@ plugin_info = {
                 'default': False,
                 'required': False,
             },
+            {
+                'type': 'select',
+                'label': 'Modelo',
+                'id': 'model',
+                'default': 'model_final.pth',
+                'options': [
+                    {'value': 'model_final.pth', 'label': 'Por defecto'},
+                ],
+                'required': False,
+            }
         ]
     }
 }
