@@ -10,10 +10,12 @@ from app.api.records.models import RecordUpdate
 from app.api.resources.services import update_cache as update_cache_resources
 from app.api.records.services import update_cache as update_cache_records
 from dotenv import load_dotenv
+import pdfplumber
 load_dotenv()
 
 mongodb = DatabaseHandler.DatabaseHandler()
 WEB_FILES_PATH = os.environ.get('WEB_FILES_PATH', '')
+ORIGINAL_FILES_PATH = os.environ.get('ORIGINAL_FILES_PATH', '')
 plugin_path = os.path.dirname(os.path.abspath(__file__))
 models_path = plugin_path + '/models'
 
@@ -44,6 +46,30 @@ class ExtendedPluginClass(PluginClass):
 
     @shared_task(ignore_result=False, name='ocrProcessing.bulk')
     def bulk(body, user):
+
+
+        def check_text_extraction(pdf_path, page):
+            with pdfplumber.open(pdf_path) as pdf:
+                page_ = pdf.pages[page]
+                text = ""
+                text += page_.extract_text()
+            
+            return len(text) > 0
+        
+        def extract_words(pdf_path, page):
+            with pdfplumber.open(pdf_path) as pdf:
+                page_ = pdf.pages[page]
+                words = page_.extract_words()
+                
+            return words, page_.width, page_.height
+        
+        def extract_words_bbox(words, bbox, page_w, page_h):
+            resp = []
+            for word in words:
+                if word['x0'] / page_w >= bbox['x_1'] and word['x1'] / page_w <= bbox['x_2'] and word['top'] / page_h >= bbox['y_1'] and word['bottom'] / page_h <= bbox['y_2']:
+                    resp.append(word)
+            return resp
+
         filters = {
             'post_type': body['post_type']
         }
@@ -72,23 +98,38 @@ class ExtendedPluginClass(PluginClass):
             '_id': 1, 'mime': 1, 'filepath': 1, 'processing': 1}))
 
         if len(records) > 0:
-            model = lp.Detectron2LayoutModel('/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/config.yaml',
-                                             '/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/model_final.pth',
+            model = lp.Detectron2LayoutModel('/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/config_1.yaml',
+                                             '/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/mymodel_1.pth',
                                              extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
-                                             label_map={0: "Text", 1: "Title", 2: "List", 3: "Table", 4: "Figure"})
+                                             label_map={0: "Figure", 1: "Footnote", 2: "List", 3: "Table", 4: "Text", 5: "Title"})
             ocr_agent = lp.TesseractAgent(languages='spa')
 
             for record in records:
 
                 path = WEB_FILES_PATH + '/' + \
                     record['processing']['fileProcessing']['path'] + '/web/big'
+                path_original = ORIGINAL_FILES_PATH + '/' + \
+                    record['processing']['fileProcessing']['path'] + '.pdf'
+                
                 files = os.listdir(path)
                 page = 0
                 resp = []
+
+                
+
                 for f in files:
-                    page += 1
+                    words = None
                     image = cv2.imread(path + '/' + f)
                     image = image[..., ::-1]
+                    image_width = image.shape[1]
+                    image_height = image.shape[0]
+                    aspect_ratio = image_width / image_height
+
+                    has_text = check_text_extraction(path_original, page)
+                    if has_text:
+                        words, w_doc, h_doc = extract_words(path_original, page)
+
+                    page += 1
 
                     layout = model.detect(image)
 
@@ -102,92 +143,129 @@ class ExtendedPluginClass(PluginClass):
                         [b for b in layout if b.type == 'Table'])
                     figure_blocks = lp.Layout(
                         [b for b in layout if b.type == 'Figure'])
+                    footnote_blocks = lp.Layout(
+                        [b for b in layout if b.type == 'Footnote'])
 
                     resp_page = []
-                    for b in text_blocks:
+
+                    def segment_image(b, image):
                         segment_image = (
                             b.pad(left=5, right=5, top=5,
-                                  bottom=5).crop_image(image)
+                                bottom=5).crop_image(image)
                         )
 
                         segment_text = ocr_agent.detect(
                             segment_image, return_response=True, return_only_text=False)
+                        
+                        txt = segment_text['text']
+
+                        return txt
+                    
+                    def extract_segment_words(words, b):
+                        segment_words = extract_words_bbox(words, {
+                            'x_1': (b.block.x_1 - 50) / image_width,
+                            'y_1': (b.block.y_1 - 50) / image_height,
+                            'x_2': (b.block.x_2 + 50) / image_width,
+                            'y_2': (b.block.y_2 + 50) / image_height
+                        }, w_doc, h_doc)
+
+                        return segment_words
+                    
+                    def get_obj(b, txt, type, segment_words):
                         obj = {
-                            'text': segment_text['text'],
-                            'type': 'text',
+                            'text': txt,
+                            'type': type,
                             'bbox': {
-                                'x': b.block.x_1,
-                                'y': b.block.y_1,
-                                'width': b.block.x_2 - b.block.x_1,
-                                'height': b.block.y_2 - b.block.y_1
-                            }
+                                'x': b.block.x_1 / image_width,
+                                'y': b.block.y_1 / image_height,
+                                'width': (b.block.x_2 - b.block.x_1) / image_width,
+                                'height': (b.block.y_2 - b.block.y_1) / image_height
+                            },
+                            'words': [{
+                                'text': s['text'],
+                                'bbox': {
+                                    'x': s['x0'] / w_doc,
+                                    'y': s['top'] / h_doc,
+                                    'width': (s['x1'] - s['x0']) / w_doc,
+                                    'height': (s['bottom'] - s['top']) / h_doc
+                                }
+                            } for s in segment_words]
                         }
+                        return obj
+                    
+
+                    for b in text_blocks:
+                        txt = ''
+                        segment_words = []
+
+                        if not has_text:
+                            txt = segment_image(b, image)
+                        else:
+                            segment_words = extract_segment_words(words, b)
+                            for w in segment_words:
+                                txt += w['text'] + ' '
+
+                        obj = get_obj(b, txt, 'text', segment_words)
 
                         resp_page.append(obj)
 
                     for b in title_blocks:
-                        segment_image = (
-                            b.pad(left=5, right=5, top=5,
-                                  bottom=5).crop_image(image)
-                        )
+                        txt = ''
+                        segment_words = []
 
-                        segment_text = ocr_agent.detect(
-                            segment_image, return_response=True, return_only_text=False)
+                        if not has_text:
+                            txt = segment_image(b, image)
+                        else:
+                            segment_words = extract_segment_words(words, b)
+                            for w in segment_words:
+                                txt += w['text'] + ' '
 
-                        obj = {
-                            'text': segment_text['text'],
-                            'type': 'title',
-                            'bbox': {
-                                'x': b.block.x_1,
-                                'y': b.block.y_1,
-                                'width': b.block.x_2 - b.block.x_1,
-                                'height': b.block.y_2 - b.block.y_1
-                            }
-                        }
+                        obj = get_obj(b, txt, 'title', segment_words)
 
                         resp_page.append(obj)
 
                     for b in list_blocks:
-                        segment_image = (
-                            b.pad(left=5, right=5, top=5,
-                                  bottom=5).crop_image(image)
-                        )
+                        txt = ''
+                        segment_words = []
 
-                        segment_text = ocr_agent.detect(
-                            segment_image, return_response=True, return_only_text=False)
+                        if not has_text:
+                            txt = segment_image(b, image)
+                        else:
+                            segment_words = extract_segment_words(words, b)
+                            for w in segment_words:
+                                txt += w['text'] + ' '
 
-                        obj = {
-                            'text': segment_text['text'],
-                            'type': 'list',
-                            'bbox': {
-                                'x': b.block.x_1,
-                                'y': b.block.y_1,
-                                'width': b.block.x_2 - b.block.x_1,
-                                'height': b.block.y_2 - b.block.y_1
-                            }
-                        }
+                        obj = get_obj(b, txt, 'list', segment_words)
 
                         resp_page.append(obj)
 
                     for b in table_blocks:
-                        segment_image = (
-                            b.pad(left=5, right=5, top=5,
-                                  bottom=5).crop_image(image)
-                        )
+                        txt = ''
+                        segment_words = []
 
-                        segment_text = ocr_agent.detect(
-                            segment_image, return_response=True, return_only_text=False)
+                        if not has_text:
+                            txt = segment_image(b, image)
+                        else:
+                            segment_words = extract_segment_words(words, b)
+                            for w in segment_words:
+                                txt += w['text'] + ' '
 
-                        obj = {
-                            'text': segment_text['text'],
-                            'type': 'table',
-                            'bbox': {
-                                'x': b.block.x_1,
-                                'y': b.block.y_1,
-                                'width': b.block.x_2 - b.block.x_1,
-                                'height': b.block.y_2 - b.block.y_1
-                            }
-                        }
+                        obj = get_obj(b, txt, 'table', segment_words)
+
+                        resp_page.append(obj)
+
+                    for b in footnote_blocks:
+                        txt = ''
+                        segment_words = []
+
+                        if not has_text:
+                            txt = segment_image(b, image)
+                        else:
+                            segment_words = extract_segment_words(words, b)
+                            for w in segment_words:
+                                txt += w['text'] + ' '
+
+                        obj = get_obj(b, txt, 'footnote', segment_words)
 
                         resp_page.append(obj)
 
@@ -195,10 +273,10 @@ class ExtendedPluginClass(PluginClass):
                         obj = {
                             'type': 'figure',
                             'bbox': {
-                                'x': b.block.x_1,
-                                'y': b.block.y_1,
-                                'width': b.block.x_2 - b.block.x_1,
-                                'height': b.block.y_2 - b.block.y_1
+                                'x': b.block.x_1 / image_width,
+                                'y': b.block.y_1 / image_height,
+                                'width': (b.block.x_2 - b.block.x_1) / image_width,
+                                'height': (b.block.y_2 - b.block.y_1) / image_height
                             }
                         }
 
