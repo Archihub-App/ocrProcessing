@@ -18,7 +18,7 @@ WEB_FILES_PATH = os.environ.get('WEB_FILES_PATH', '')
 ORIGINAL_FILES_PATH = os.environ.get('ORIGINAL_FILES_PATH', '')
 plugin_path = os.path.dirname(os.path.abspath(__file__))
 models_path = plugin_path + '/models'
-
+tessdata_path = plugin_path + '/tessdata'
 
 class ExtendedPluginClass(PluginClass):
     def __init__(self, path, import_name, name, description, version, author, type, settings):
@@ -46,7 +46,6 @@ class ExtendedPluginClass(PluginClass):
 
     @shared_task(ignore_result=False, name='ocrProcessing.bulk')
     def bulk(body, user):
-
 
         def check_text_extraction(pdf_path, page):
             with pdfplumber.open(pdf_path) as pdf:
@@ -98,10 +97,11 @@ class ExtendedPluginClass(PluginClass):
             '_id': 1, 'mime': 1, 'filepath': 1, 'processing': 1}))
 
         if len(records) > 0:
-            model = lp.Detectron2LayoutModel('/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/config_1.yaml',
-                                             '/home/nestor/.torch/iopath_cache/s/57zjbwv6gh3srry/mymodel_1.pth',
+            model = lp.Detectron2LayoutModel(models_path + '/config_1.yaml',
+                                             models_path + '/mymodel_1.pth',
                                              extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
                                              label_map={0: "Figure", 1: "Footnote", 2: "List", 3: "Table", 4: "Text", 5: "Title"})
+            
             ocr_agent = lp.TesseractAgent(languages='spa')
 
             for record in records:
@@ -324,16 +324,6 @@ plugin_info = {
                 'label': 'Sobreescribir procesamientos existentes',
                 'id': 'overwrite',
                 'default': False,
-                'required': False,
-            },
-            {
-                'type': 'select',
-                'label': 'Modelo',
-                'id': 'model',
-                'default': 'model_final.pth',
-                'options': [
-                    {'value': 'model_final.pth', 'label': 'Por defecto'},
-                ],
                 'required': False,
             }
         ]

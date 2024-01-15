@@ -1,1 +1,4 @@
-pdfplumber
+pdfplumber==0.10.3
+pytesseract==0.3.10
+pdf2image==1.16.3
+layoutparser==0.3.4
