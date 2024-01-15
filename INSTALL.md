@@ -1,2 +1,0 @@
-# Instalación del plugin
-
