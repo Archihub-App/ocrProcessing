@@ -1,4 +1,14 @@
-# OCR
+# OCR processing
+
+## About
+
+The Archihub PDF Segmentation and OCR Plugin is designed to efficiently process PDF files, segmenting them into blocks and applying Optical Character Recognition (OCR) to specific regions.
+
+## Features
+
+- **PDF Segmentation:** The plugin intelligently segments PDF files into distinct blocks for efficient processing using LayoutParser.
+
+- **OCR Integration:** OCR is selectively applied to identified blocks, extracting text for further use or analysis using Tesseract.
 
 ## Installation
 
