@@ -87,11 +87,8 @@ class ExtendedPluginClass(PluginClass):
             'processing.fileProcessing': {'$exists': True},
             '$or': [{'processing.fileProcessing.type': 'document'}]
         }
-        if body['overwrite']:
-            records_filters['processing.ocrProcessing'] = {'$exists': True}
-        else:
-            records_filters['processing.ocrProcessing'] = {
-                '$exists': False}
+        if not body['overwrite']:
+            records_filters['processing.ocrProcessing'] = {'$exists': False}
 
         records = list(mongodb.get_all_records('records', records_filters, fields={
             '_id': 1, 'mime': 1, 'filepath': 1, 'processing': 1}))
