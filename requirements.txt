@@ -2,6 +2,6 @@ pdfplumber==0.10.3
 pytesseract==0.3.10
 pdf2image==1.16.3
 layoutparser==0.3.4
+torchvision==0.16.0+cpu
 git+https://github.com/facebookresearch/detectron2.git@v0.5#egg=detectron2
 layoutparser[ocr]
-torchvision==0.16.0+cpu

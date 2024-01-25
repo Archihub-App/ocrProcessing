@@ -96,7 +96,7 @@ class ExtendedPluginClass(PluginClass):
         if len(records) > 0:
             model = lp.Detectron2LayoutModel(models_path + '/config_1.yaml',
                                              models_path + '/mymodel_1.pth',
-                                             extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
+                                             extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5],
                                              label_map={0: "Figure", 1: "Footnote", 2: "List", 3: "Table", 4: "Text", 5: "Title"})
             
             ocr_agent = lp.TesseractAgent(languages='spa')
