@@ -12,7 +12,11 @@ from app.api.records.services import update_cache as update_cache_records
 from app.api.users.services import has_role
 from app.api.tasks.services import add_task
 from dotenv import load_dotenv
+from bson.objectid import ObjectId
 import pdfplumber
+import importlib
+import json
+
 load_dotenv()
 
 mongodb = DatabaseHandler.DatabaseHandler()
@@ -39,7 +43,7 @@ class ExtendedPluginClass(PluginClass):
 
             if not self.has_role('admin', current_user) and not self.has_role('processing', current_user):
                 return {'msg': 'No tiene permisos suficientes'}, 401
-
+            
             task = self.bulk.delay(body, current_user)
             self.add_task_to_user(
                 task.id, 'ocrProcessing.bulk', current_user, 'msg')
@@ -75,9 +79,12 @@ class ExtendedPluginClass(PluginClass):
             'post_type': body['post_type']
         }
 
-        if 'parent' in body:
-            if body['parent']:
-                filters['parents.id'] = body['parent']
+        if body['parent'] and len(body['resources']) == 0:
+            filters = {'$or': [{'parents.id': body['parent'], 'post_type': body['post_type']}, {'_id': ObjectId(body['parent'])}], **filters}
+        
+        if body['resources']:
+            if len(body['resources']) > 0:
+                filters = {'_id': {'$in': [ObjectId(resource) for resource in body['resources']]}, **filters}
 
         # obtenemos los recursos
         resources = list(mongodb.get_all_records(
@@ -96,25 +103,26 @@ class ExtendedPluginClass(PluginClass):
             '_id': 1, 'mime': 1, 'filepath': 1, 'processing': 1}))
 
         if len(records) > 0:
-            model = lp.Detectron2LayoutModel(models_path + '/config_1.yaml',
-                                             models_path + '/mymodel_1.pth',
+
+            label_map = importlib.import_module(f'.models.{body["model"]}.label_map', package=__name__)
+            model = lp.Detectron2LayoutModel(os.path.join(models_path, body['model'], 'config.yaml'),
+                                             os.path.join(models_path, body['model'], 'model.pth'),
                                              extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5],
-                                             label_map={0: "Figure", 1: "Footnote", 2: "List", 3: "Table", 4: "Text", 5: "Title"})
+                                             label_map=label_map.list_map)
             
             ocr_agent = lp.TesseractAgent(languages='spa')
 
             for record in records:
 
-                path = WEB_FILES_PATH + '/' + \
-                    record['processing']['fileProcessing']['path'] + '/web/big'
-                path_original = ORIGINAL_FILES_PATH + '/' + \
-                    record['processing']['fileProcessing']['path'] + '.pdf'
+                path = os.path.join(WEB_FILES_PATH, record['processing']['fileProcessing']['path'], 'web', 'big')
+                path_original = os.path.join(ORIGINAL_FILES_PATH, record['processing']['fileProcessing']['path'] + '.pdf')
                 
                 files = os.listdir(path)
                 page = 0
                 resp = []
 
-                
+                label_map = label_map.list_map[0]
+                label_map = [label_map[key] for key in label_map]
 
                 for f in files:
                     words = None
@@ -132,18 +140,10 @@ class ExtendedPluginClass(PluginClass):
 
                     layout = model.detect(image)
 
-                    text_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'Text'])
-                    title_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'Title'])
-                    list_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'List'])
-                    table_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'Table'])
-                    figure_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'Figure'])
-                    footnote_blocks = lp.Layout(
-                        [b for b in layout if b.type == 'Footnote'])
+                    blocks = []
+                    for l in label_map:
+                        _ = lp.Layout([b for b in layout if b.type == l])
+                        blocks.append(_)
 
                     resp_page = []
 
@@ -192,95 +192,34 @@ class ExtendedPluginClass(PluginClass):
                         }
                         return obj
                     
+                    for block in blocks:
+                        for b in block:
+                            if block.type in body['ocr_types']:
+                                txt = ''
+                                segment_words = []
 
-                    for b in text_blocks:
-                        txt = ''
-                        segment_words = []
+                                if not has_text:
+                                    txt = segment_image(b, image)
+                                else:
+                                    segment_words = extract_segment_words(words, b)
+                                    for w in segment_words:
+                                        txt += w['text'] + ' '
 
-                        if not has_text:
-                            txt = segment_image(b, image)
-                        else:
-                            segment_words = extract_segment_words(words, b)
-                            for w in segment_words:
-                                txt += w['text'] + ' '
+                                obj = get_obj(b, txt, block.type, segment_words)
 
-                        obj = get_obj(b, txt, 'text', segment_words)
+                                resp_page.append(obj)
+                            else:
+                                obj = {
+                                    'type': block.type,
+                                    'bbox': {
+                                        'x': b.block.x_1 / image_width,
+                                        'y': b.block.y_1 / image_height,
+                                        'width': (b.block.x_2 - b.block.x_1) / image_width,
+                                        'height': (b.block.y_2 - b.block.y_1) / image_height
+                                    }
+                                }
 
-                        resp_page.append(obj)
-
-                    for b in title_blocks:
-                        txt = ''
-                        segment_words = []
-
-                        if not has_text:
-                            txt = segment_image(b, image)
-                        else:
-                            segment_words = extract_segment_words(words, b)
-                            for w in segment_words:
-                                txt += w['text'] + ' '
-
-                        obj = get_obj(b, txt, 'title', segment_words)
-
-                        resp_page.append(obj)
-
-                    for b in list_blocks:
-                        txt = ''
-                        segment_words = []
-
-                        if not has_text:
-                            txt = segment_image(b, image)
-                        else:
-                            segment_words = extract_segment_words(words, b)
-                            for w in segment_words:
-                                txt += w['text'] + ' '
-
-                        obj = get_obj(b, txt, 'list', segment_words)
-
-                        resp_page.append(obj)
-
-                    for b in table_blocks:
-                        txt = ''
-                        segment_words = []
-
-                        if not has_text:
-                            txt = segment_image(b, image)
-                        else:
-                            segment_words = extract_segment_words(words, b)
-                            for w in segment_words:
-                                txt += w['text'] + ' '
-
-                        obj = get_obj(b, txt, 'table', segment_words)
-
-                        resp_page.append(obj)
-
-                    for b in footnote_blocks:
-                        txt = ''
-                        segment_words = []
-
-                        if not has_text:
-                            txt = segment_image(b, image)
-                        else:
-                            segment_words = extract_segment_words(words, b)
-                            for w in segment_words:
-                                txt += w['text'] + ' '
-
-                        obj = get_obj(b, txt, 'footnote', segment_words)
-
-                        resp_page.append(obj)
-
-                    for b in figure_blocks:
-                        obj = {
-                            'type': 'figure',
-                            'bbox': {
-                                'x': b.block.x_1 / image_width,
-                                'y': b.block.y_1 / image_height,
-                                'width': (b.block.x_2 - b.block.x_1) / image_width,
-                                'height': (b.block.y_2 - b.block.y_1) / image_height
-                            }
-                        }
-
-                        resp_page.append(obj)
-
+                                resp_page.append(obj)
 
                     resp.append({
                         'page': page,
@@ -300,8 +239,8 @@ class ExtendedPluginClass(PluginClass):
                 mongodb.update_record(
                     'records', {'_id': record['_id']}, update)
 
-        update_cache_records()
-        update_cache_resources()
+        instance = ExtendedPluginClass('ocrProcessing','', **plugin_info)
+        instance.clear_cache()
         return 'Extracción de texto finalizada'
 
 
@@ -319,9 +258,56 @@ class ExtendedPluginClass(PluginClass):
                     return self.settings
                 elif type == 'settings':
                     return self.settings['settings']
+                elif type == 'bulk':
+                    # obtenemos todos los directorios en models_path
+                    template_folders = os.listdir(models_path)
+                    template_folders = [t for t in template_folders if os.path.isdir(os.path.join(models_path, t))]
+                    template_folders = [t for t in template_folders if t != '__pycache__']
+
+                    resp = [*self.settings['settings_bulk']]
+                    resp.append({
+                        'type': 'select',
+                        'id': 'model',
+                        'label': 'Modelo de segmentación',
+                        'default': '',
+                        'options': [{'value': t, 'label': t} for t in template_folders],
+                        'required': True
+                    })
+
+                    condi_block = {
+                        'type': 'condition',
+                        'id': 'ocr_types',
+                        'label': 'Tipos de segmentación para OCR',
+                        'default': [],
+                        'id_condition': 'model',
+                        'condition': '==',
+                        'options': [],
+                    }
+                    for folder in template_folders:
+                        label_map = importlib.import_module(f'.models.{folder}.label_map', package=__name__)
+                        label_map = label_map.list_map[0]
+                        label_map = [{'label': label_map[key], 'value': label_map[key]} for key in label_map]
+
+                        condi_block['options'].append({
+                            'value': folder,
+                            'fields': [
+                                {
+                                    'type': 'multiple-checkbox',
+                                    'label': '',
+                                    'id': folder + '_ocrtypes',
+                                    'default': [],
+                                    'required': False,
+                                    'options': label_map
+                                }
+                            ]
+                        })
+
+                    resp.append(condi_block)
+                    return resp
                 else:
                     return self.settings['settings_' + type]
             except Exception as e:
+                print(str(e))
                 return {'msg': str(e)}, 500
             
         @self.route('/settings', methods=['POST'])
@@ -336,8 +322,6 @@ class ExtendedPluginClass(PluginClass):
                 body = request.form.to_dict()
                 data = body['data']
                 data = json.loads(data)
-
-                print(data)
 
                 self.set_plugin_settings(data)
                 return {'msg': 'Configuración guardada'}, 200
