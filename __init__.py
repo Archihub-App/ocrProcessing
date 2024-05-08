@@ -9,6 +9,8 @@ import cv2
 from app.api.records.models import RecordUpdate
 from app.api.resources.services import update_cache as update_cache_resources
 from app.api.records.services import update_cache as update_cache_records
+from app.api.users.services import has_role
+from app.api.tasks.services import add_task
 from dotenv import load_dotenv
 import pdfplumber
 load_dotenv()
@@ -302,6 +304,46 @@ class ExtendedPluginClass(PluginClass):
         update_cache_resources()
         return 'Extracción de texto finalizada'
 
+
+    def get_settings(self):
+        @self.route('/settings/<type>', methods=['GET'])
+        @jwt_required()
+        def get_settings(type):
+            try:
+                current_user = get_jwt_identity()
+
+                if not has_role(current_user, 'admin') and not has_role(current_user, 'processing'):
+                    return {'msg': 'No tiene permisos suficientes'}, 401
+                
+                if type == 'all':
+                    return self.settings
+                elif type == 'settings':
+                    return self.settings['settings']
+                else:
+                    return self.settings['settings_' + type]
+            except Exception as e:
+                return {'msg': str(e)}, 500
+            
+        @self.route('/settings', methods=['POST'])
+        @jwt_required()
+        def set_settings_update():
+            try:
+                current_user = get_jwt_identity()
+
+                if not has_role(current_user, 'admin') and not has_role(current_user, 'processing'):
+                    return {'msg': 'No tiene permisos suficientes'}, 401
+                
+                body = request.form.to_dict()
+                data = body['data']
+                data = json.loads(data)
+
+                print(data)
+
+                self.set_plugin_settings(data)
+                return {'msg': 'Configuración guardada'}, 200
+            
+            except Exception as e:
+                return {'msg': str(e)}, 500
 
 plugin_info = {
     'name': 'Extraer texto de documentos',
