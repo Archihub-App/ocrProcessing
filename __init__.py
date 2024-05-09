@@ -105,12 +105,17 @@ class ExtendedPluginClass(PluginClass):
         if len(records) > 0:
 
             label_map = importlib.import_module(f'.models.{body["model"]}.label_map', package=__name__)
+            label_map = label_map.list_map[0]
+
+            print(label_map)
+
             model = lp.Detectron2LayoutModel(os.path.join(models_path, body['model'], 'config.yaml'),
                                              os.path.join(models_path, body['model'], 'model.pth'),
                                              extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5],
-                                             label_map=label_map.list_map)
+                                             label_map=label_map)
             
             ocr_agent = lp.TesseractAgent(languages='spa')
+            label_map = [label_map[key] for key in label_map]
 
             for record in records:
 
@@ -121,8 +126,6 @@ class ExtendedPluginClass(PluginClass):
                 page = 0
                 resp = []
 
-                label_map = label_map.list_map[0]
-                label_map = [label_map[key] for key in label_map]
 
                 for f in files:
                     words = None
@@ -194,7 +197,7 @@ class ExtendedPluginClass(PluginClass):
                     
                     for block in blocks:
                         for b in block:
-                            if block.type in body['ocr_types']:
+                            if b.type in body['ocr_types']:
                                 txt = ''
                                 segment_words = []
 
@@ -205,12 +208,12 @@ class ExtendedPluginClass(PluginClass):
                                     for w in segment_words:
                                         txt += w['text'] + ' '
 
-                                obj = get_obj(b, txt, block.type, segment_words)
+                                obj = get_obj(b, txt, b.type, segment_words)
 
                                 resp_page.append(obj)
                             else:
                                 obj = {
-                                    'type': block.type,
+                                    'type': b.type,
                                     'bbox': {
                                         'x': b.block.x_1 / image_width,
                                         'y': b.block.y_1 / image_height,
@@ -349,6 +352,31 @@ plugin_info = {
                 'default': False,
                 'required': False,
             }
-        ]
+        ],
+        'settings_block': [
+            {
+                'type': 'text-area',
+                'label': 'Texto en el bloque',
+                'id': 'text',
+                'default': '',
+                'required': False
+            },
+            {
+                'type': 'select',
+                'label': 'Tipo de bloque',
+                'id': 'type',
+                'default': '',
+                'required': True,
+            }
+        ],
+        'settings_word': [
+            {
+                'type': 'text',
+                'label': 'Texto en el bloque',
+                'id': 'text',
+                'default': '',
+                'required': False
+            }
+        ],
     }
 }
