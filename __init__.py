@@ -6,6 +6,8 @@ from flask import request
 import os
 import layoutparser as lp
 import cv2
+from app.utils.LogActions import log_actions
+from app.api.logs.services import register_log
 from app.api.records.models import RecordUpdate
 from app.api.resources.services import update_cache as update_cache_resources
 from app.api.records.services import update_cache as update_cache_records
@@ -52,6 +54,8 @@ class ExtendedPluginClass(PluginClass):
 
     @shared_task(ignore_result=False, name='ocrProcessing.bulk')
     def bulk(body, user):
+
+        id_process = []
 
         def check_text_extraction(pdf_path, page):
             with pdfplumber.open(pdf_path) as pdf:
@@ -241,6 +245,10 @@ class ExtendedPluginClass(PluginClass):
                 update = RecordUpdate(**update)
                 mongodb.update_record(
                     'records', {'_id': record['_id']}, update)
+                id_process.append(record['_id'])
+
+        # Registrar el log
+        register_log(user, log_actions['lt_extraction'], {'form': body, 'ids': id_process})
 
         instance = ExtendedPluginClass('ocrProcessing','', **plugin_info)
         instance.clear_cache()
