@@ -300,7 +300,7 @@ class ExtendedPluginClass(PluginClass):
                         'id': 'model',
                         'label': 'Modelo de segmentación',
                         'default': '*',
-                        'options': [{'value': '*', 'label': 'Detectar un único bloque en toda la página'}] + [{'value': t, 'label': t} for t in template_folders],
+                        'options': [{'value': '*', 'label': 'Detectar un único bloque en toda la página'}, {'value': 'existing', 'label': 'Usar los bloques guardados en el sistema'}] + [{'value': t, 'label': t} for t in template_folders],
                     }
                     
                     condi_block = {
