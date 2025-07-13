@@ -4,8 +4,6 @@ from celery import shared_task
 from app.utils import DatabaseHandler
 from flask import request
 import os
-import layoutparser as lp
-import cv2
 from app.api.records.models import RecordUpdate
 from app.api.resources.services import update_cache as update_cache_resources
 from app.api.records.services import update_cache as update_cache_records
@@ -13,9 +11,10 @@ from app.api.users.services import has_role
 from app.api.tasks.services import add_task
 from dotenv import load_dotenv
 from bson.objectid import ObjectId
-import pdfplumber
-import importlib
 import json
+import pdfplumber
+import importlib 
+from datetime import datetime                                                   
 
 load_dotenv()
 
@@ -27,9 +26,8 @@ models_path = plugin_path + '/models'
 tessdata_path = plugin_path + '/tessdata'
 
 class ExtendedPluginClass(PluginClass):
-    def __init__(self, path, import_name, name, description, version, author, type, settings, **kwargs):
-        super().__init__(path, __file__, import_name, name,
-                         description, version, author, type, settings, **kwargs)
+    def __init__(self, path, import_name, name, description, version, author, type, settings, actions=None, capabilities=None, **kwargs):
+        super().__init__(path, __file__, import_name, name, description, version, author, type, settings, actions=actions, capabilities=capabilities, **kwargs)
         
     def add_routes(self):
         @self.route('/bulk', methods=['POST'])
@@ -65,7 +63,9 @@ class ExtendedPluginClass(PluginClass):
             return {'msg': 'Se agregó la tarea a la fila de procesamientos'}, 201
 
     @shared_task(ignore_result=False, name='ocrProcessing.bulk')
-    def bulk(body, user):
+    def bulk(body, user):       
+        import cv2
+        import layoutparser as lp
 
         def check_text_extraction(pdf_path, page):
             with pdfplumber.open(pdf_path) as pdf:
@@ -127,10 +127,9 @@ class ExtendedPluginClass(PluginClass):
             if not page_block:
                 label_map = importlib.import_module(f'.models.{body["model"]}.label_map', package=__name__)
                 label_map = label_map.list_map[0]
-                label_map = [label_map[key] for key in label_map]
                 model = lp.Detectron2LayoutModel(os.path.join(models_path, body['model'], 'config.yaml'),
                                                 os.path.join(models_path, body['model'], 'model.pth'),
-                                                extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5],
+                                                extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5, "MODEL.DEVICE", "cpu"],
                                                 label_map=label_map, device='cpu')
             
                 ocr_agent = lp.TesseractAgent(languages='spa')
@@ -138,16 +137,15 @@ class ExtendedPluginClass(PluginClass):
                 label_map = ['Page']
 
             
-            ocr_types = body.get('ocr_types', label_map)
+            ocr_types = body.get('ocr_types', list(label_map.values()))
             for record in records:
                 path = os.path.join(WEB_FILES_PATH, record['processing']['fileProcessing']['path'], 'web', 'big')
                 path_original = os.path.join(ORIGINAL_FILES_PATH, record['processing']['fileProcessing']['path'] + '.pdf')
-                files = os.listdir(path)
+                files = sorted(os.listdir(path))
                 page = 0
                 resp = []
                 
                 for i, f in enumerate(files):
-                    
                     if page_only and page + 1 != page_to_process:
                         page += 1
                         continue
@@ -168,7 +166,7 @@ class ExtendedPluginClass(PluginClass):
                     layout = model.detect(image)
 
                     blocks = []
-                    for l in label_map:
+                    for l in label_map.values():
                         if not page_block:
                             _ = lp.Layout([b for b in layout if b.type == l])
                             blocks.append(_)
@@ -270,12 +268,16 @@ class ExtendedPluginClass(PluginClass):
                     'processing': record['processing']
                 }
 
+                string_label_map = {str(k): v for k, v in label_map.items()}
+
                 update['processing']['ocrProcessing'] = {
                     'type': 'lt_extraction',
                     'model': body['model'],
-                    'labels': label_map,
+                    'labels': string_label_map,
                     'result': resp
                 }
+                update['updatedAt'] = datetime.now()
+                update['updatedBy'] = user if user else 'system'
 
                 update = RecordUpdate(**update)
                 mongodb.update_record(
