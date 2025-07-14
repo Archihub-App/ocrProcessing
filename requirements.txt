@@ -1,3 +1,4 @@
+torch
 pdfplumber
 pytesseract
 pdf2image
