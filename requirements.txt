@@ -1,3 +1,8 @@
+# Debe tener instalado Tesseract OCR en el sistema.
+# Para instalar Tesseract OCR en Ubuntu, puedes usar los siguientes comandos:
+#   sudo apt-get update
+#   sudo apt-get install tesseract-ocr
+#   sudo apt-get install tesseract-ocr-spa  # Para soporte en español
 torch
 pdfplumber
 pytesseract

@@ -292,50 +292,52 @@ class ExtendedPluginClass(PluginClass):
             if 'placement' in a:
                 if a['placement'] == 'detail_record':
                     form = a.get('extraOpts', [])
-                    
-                    template_folders = os.listdir(models_path)
-                    template_folders = [t for t in template_folders if os.path.isdir(os.path.join(models_path, t))]
-                    template_folders = [t for t in template_folders if t != '__pycache__']
-                    
-                    model_block = {
-                        'type': 'select',
-                        'id': 'model',
-                        'label': 'Modelo de segmentación',
-                        'default': '*',
-                        'options': [{'value': '*', 'label': 'Detectar un único bloque en toda la página'}, {'value': 'existing', 'label': 'Usar los bloques guardados en el sistema'}] + [{'value': t, 'label': t} for t in template_folders],
-                    }
-                    
-                    condi_block = {
-                        'type': 'condition',
-                        'id': 'ocr_types',
-                        'label': 'Tipos de segmentación para OCR',
-                        'default': [],
-                        'id_condition': 'model',
-                        'condition': '==',
-                        'options': [],
-                    }
-                    for folder in template_folders:
-                        label_map = importlib.import_module(f'.models.{folder}.label_map', package=__name__)
-                        label_map = label_map.list_map[0]
-                        label_map = [{'label': label_map[key], 'value': label_map[key]} for key in label_map]
 
-                        condi_block['options'].append({
-                            'value': folder,
-                            'fields': [
-                                {
-                                    'type': 'multiple-checkbox',
-                                    'label': '',
-                                    'id': folder + '_ocrtypes',
-                                    'default': [],
-                                    'required': False,
-                                    'options': label_map
-                                }
-                            ]
-                        })
+                    # Check if model selection already exists in form
+                    if not any(opt.get('id') == 'model' for opt in form):
+                        template_folders = os.listdir(models_path)
+                        template_folders = [t for t in template_folders if os.path.isdir(os.path.join(models_path, t))]
+                        template_folders = [t for t in template_folders if t != '__pycache__']
                         
-                    form = [model_block] + [condi_block] + form
-                    
-                    a['extraOpts'] = form
+                        model_block = {
+                            'type': 'select',
+                            'id': 'model',
+                            'label': 'Modelo de segmentación',
+                            'default': '*',
+                            'options': [{'value': '*', 'label': 'Detectar un único bloque en toda la página'}, {'value': 'existing', 'label': 'Usar los bloques guardados en el sistema'}] + [{'value': t, 'label': t} for t in template_folders],
+                        }
+                        
+                        condi_block = {
+                            'type': 'condition',
+                            'id': 'ocr_types',
+                            'label': 'Tipos de segmentación para OCR',
+                            'default': [],
+                            'id_condition': 'model',
+                            'condition': '==',
+                            'options': [],
+                        }
+                        for folder in template_folders:
+                            label_map = importlib.import_module(f'.models.{folder}.label_map', package=__name__)
+                            label_map = label_map.list_map[0]
+                            label_map = [{'label': label_map[key], 'value': label_map[key]} for key in label_map]
+
+                            condi_block['options'].append({
+                                'value': folder,
+                                'fields': [
+                                    {
+                                        'type': 'multiple-checkbox',
+                                        'label': '',
+                                        'id': folder + '_ocrtypes',
+                                        'default': [],
+                                        'required': False,
+                                        'options': label_map
+                                    }
+                                ]
+                            })
+                            
+                        form = [model_block] + [condi_block] + form
+                        
+                        a['extraOpts'] = form
                     
         return self.actions
 
