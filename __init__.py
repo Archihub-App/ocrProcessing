@@ -15,9 +15,10 @@ from app.api.users.services import has_role
 from app.api.tasks.services import add_task
 from dotenv import load_dotenv
 from bson.objectid import ObjectId
-import pdfplumber
-import importlib
 import json
+import pdfplumber
+import importlib 
+from datetime import datetime                                                   
 
 load_dotenv()
 
@@ -29,9 +30,8 @@ models_path = plugin_path + '/models'
 tessdata_path = plugin_path + '/tessdata'
 
 class ExtendedPluginClass(PluginClass):
-    def __init__(self, path, import_name, name, description, version, author, type, settings):
-        super().__init__(path, __file__, import_name, name,
-                         description, version, author, type, settings)
+    def __init__(self, path, import_name, name, description, version, author, type, settings, actions=None, capabilities=None, **kwargs):
+        super().__init__(path, __file__, import_name, name, description, version, author, type, settings, actions=actions, capabilities=capabilities, **kwargs)
         
     def add_routes(self):
         @self.route('/bulk', methods=['POST'])
@@ -51,9 +51,25 @@ class ExtendedPluginClass(PluginClass):
                 task.id, 'ocrProcessing.bulk', current_user, 'msg')
 
             return {'msg': 'Se agregó la tarea a la fila de procesamientos'}, 201
+        
+        @self.route('/blockProcessing', methods=['POST'])
+        @jwt_required()
+        def block_processing():
+            current_user = get_jwt_identity()
+            body = request.get_json()
+            
+            print(body)
+
+            task = self.bulk.delay(body, current_user)
+            self.add_task_to_user(task.id, 'ocrProcessing.blockProcessing', current_user, 'msg')
+            
+
+            return {'msg': 'Se agregó la tarea a la fila de procesamientos'}, 201
 
     @shared_task(ignore_result=False, name='ocrProcessing.bulk')
-    def bulk(body, user):
+    def bulk(body, user):       
+        import cv2
+        import layoutparser as lp
 
         id_process = []
 
@@ -79,59 +95,67 @@ class ExtendedPluginClass(PluginClass):
                     resp.append(word)
             return resp
 
-        filters = {
-            'post_type': body['post_type']
-        }
+        if 'records' not in body:
+            filters = {
+                'post_type': body['post_type']
+            }
 
-        if body['parent'] and len(body['resources']) == 0:
-            filters = {'$or': [{'parents.id': body['parent'], 'post_type': body['post_type']}, {'_id': ObjectId(body['parent'])}], **filters}
-        
-        if body['resources']:
-            if len(body['resources']) > 0:
-                filters = {'_id': {'$in': [ObjectId(resource) for resource in body['resources']]}, **filters}
+            if body['parent'] and len(body['resources']) == 0:
+                filters = {'$or': [{'parents.id': body['parent'], 'post_type': body['post_type']}, {'_id': ObjectId(body['parent'])}], **filters}
+            
+            if body['resources']:
+                if len(body['resources']) > 0:
+                    filters = {'_id': {'$in': [ObjectId(resource) for resource in body['resources']]}, **filters}
 
-        # obtenemos los recursos
-        resources = list(mongodb.get_all_records(
-            'resources', filters, fields={'_id': 1}))
-        resources = [str(resource['_id']) for resource in resources]
-
-        records_filters = {
-            'parent.id': {'$in': resources},
-            'processing.fileProcessing': {'$exists': True},
-            '$or': [{'processing.fileProcessing.type': 'document'}]
-        }
-        if not body['overwrite']:
-            records_filters['processing.ocrProcessing'] = {'$exists': False}
-
+            # obtenemos los recursos
+            resources = list(mongodb.get_all_records(
+                'resources', filters, fields={'_id': 1}))
+            records_filters = {
+                'parent.id': {'$in': resources},
+                'processing.fileProcessing': {'$exists': True},
+                '$or': [{'processing.fileProcessing.type': 'document'}]
+            }
+            if not body['overwrite']:
+                records_filters['processing.ocrProcessing'] = {'$exists': False}
+                
+        else:
+            records_filters = {'_id': {'$in': [ObjectId(record) for record in body['records']]}}
+            
         records = list(mongodb.get_all_records('records', records_filters, fields={
             '_id': 1, 'mime': 1, 'filepath': 1, 'processing': 1}))
 
         if len(records) > 0:
-
-            label_map = importlib.import_module(f'.models.{body["model"]}.label_map', package=__name__)
-            label_map = label_map.list_map[0]
-
-            print(label_map)
-
-            model = lp.Detectron2LayoutModel(os.path.join(models_path, body['model'], 'config.yaml'),
-                                             os.path.join(models_path, body['model'], 'model.pth'),
-                                             extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5],
-                                             label_map=label_map)
+            page_block = body.get('model', '*') == '*'
+            page_only = body.get('page_only', False)
+            page_to_process = body.get('opts', None)
+            page_to_process = page_to_process.get('page', 1) if page_only else None
             
-            ocr_agent = lp.TesseractAgent(languages='spa')
-            label_map = [label_map[key] for key in label_map]
+            if not page_block:
+                label_map = importlib.import_module(f'.models.{body["model"]}.label_map', package=__name__)
+                label_map = label_map.list_map[0]
+                model = lp.Detectron2LayoutModel(os.path.join(models_path, body['model'], 'config.yaml'),
+                                                os.path.join(models_path, body['model'], 'model.pth'),
+                                                extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7, "MODEL.ROI_BOX_HEAD.FED_LOSS_FREQ_WEIGHT_POWER", 0.5, "MODEL.DEVICE", "cpu"],
+                                                label_map=label_map, device='cpu')
+            
+                ocr_agent = lp.TesseractAgent(languages='spa')
+            else:
+                label_map = ['Page']
 
+            
+            ocr_types = body.get('ocr_types', list(label_map.values()))
             for record in records:
-
                 path = os.path.join(WEB_FILES_PATH, record['processing']['fileProcessing']['path'], 'web', 'big')
                 path_original = os.path.join(ORIGINAL_FILES_PATH, record['processing']['fileProcessing']['path'] + '.pdf')
-                
-                files = os.listdir(path)
+                files = sorted(os.listdir(path))
                 page = 0
                 resp = []
-
-
-                for f in files:
+                
+                for i, f in enumerate(files):
+                    if page_only and page + 1 != page_to_process:
+                        page += 1
+                        continue
+                    
                     words = None
                     image = cv2.imread(path + '/' + f)
                     image = image[..., ::-1]
@@ -148,9 +172,22 @@ class ExtendedPluginClass(PluginClass):
                     layout = model.detect(image)
 
                     blocks = []
-                    for l in label_map:
-                        _ = lp.Layout([b for b in layout if b.type == l])
-                        blocks.append(_)
+                    for l in label_map.values():
+                        if not page_block:
+                            _ = lp.Layout([b for b in layout if b.type == l])
+                            blocks.append(_)
+                        else:
+                            if l == 'Page':
+                                _ = {
+                                    'block': {
+                                        'x_1': 0,
+                                        'y_1': 0,
+                                        'x_2': image_width,
+                                        'y_2': image_height
+                                    },
+                                    'type': l
+                                }
+                                blocks.append(_)
 
                     resp_page = []
 
@@ -201,7 +238,7 @@ class ExtendedPluginClass(PluginClass):
                     
                     for block in blocks:
                         for b in block:
-                            if b.type in body['ocr_types']:
+                            if b.type in ocr_types:
                                 txt = ''
                                 segment_words = []
 
@@ -237,10 +274,16 @@ class ExtendedPluginClass(PluginClass):
                     'processing': record['processing']
                 }
 
+                string_label_map = {str(k): v for k, v in label_map.items()}
+
                 update['processing']['ocrProcessing'] = {
                     'type': 'lt_extraction',
+                    'model': body['model'],
+                    'labels': string_label_map,
                     'result': resp
                 }
+                update['updatedAt'] = datetime.now()
+                update['updatedBy'] = user if user else 'system'
 
                 update = RecordUpdate(**update)
                 mongodb.update_record(
@@ -254,6 +297,57 @@ class ExtendedPluginClass(PluginClass):
         instance.clear_cache()
         return 'Extracción de texto finalizada'
 
+    def get_actions(self):
+        for a in self.actions:
+            if 'placement' in a:
+                if a['placement'] == 'detail_record':
+                    form = a.get('extraOpts', [])
+                    
+                    template_folders = os.listdir(models_path)
+                    template_folders = [t for t in template_folders if os.path.isdir(os.path.join(models_path, t))]
+                    template_folders = [t for t in template_folders if t != '__pycache__']
+                    
+                    model_block = {
+                        'type': 'select',
+                        'id': 'model',
+                        'label': 'Modelo de segmentación',
+                        'default': '*',
+                        'options': [{'value': '*', 'label': 'Detectar un único bloque en toda la página'}, {'value': 'existing', 'label': 'Usar los bloques guardados en el sistema'}] + [{'value': t, 'label': t} for t in template_folders],
+                    }
+                    
+                    condi_block = {
+                        'type': 'condition',
+                        'id': 'ocr_types',
+                        'label': 'Tipos de segmentación para OCR',
+                        'default': [],
+                        'id_condition': 'model',
+                        'condition': '==',
+                        'options': [],
+                    }
+                    for folder in template_folders:
+                        label_map = importlib.import_module(f'.models.{folder}.label_map', package=__name__)
+                        label_map = label_map.list_map[0]
+                        label_map = [{'label': label_map[key], 'value': label_map[key]} for key in label_map]
+
+                        condi_block['options'].append({
+                            'value': folder,
+                            'fields': [
+                                {
+                                    'type': 'multiple-checkbox',
+                                    'label': '',
+                                    'id': folder + '_ocrtypes',
+                                    'default': [],
+                                    'required': False,
+                                    'options': label_map
+                                }
+                            ]
+                        })
+                        
+                    form = [model_block] + [condi_block] + form
+                    
+                    a['extraOpts'] = form
+                    
+        return self.actions
 
     def get_settings(self):
         @self.route('/settings/<type>', methods=['GET'])
@@ -315,6 +409,8 @@ class ExtendedPluginClass(PluginClass):
 
                     resp.append(condi_block)
                     return resp
+                elif type == 'block':
+                    return self.settings['settings_block']
                 else:
                     return self.settings['settings_' + type]
             except Exception as e:
@@ -361,14 +457,7 @@ plugin_info = {
                 'required': False,
             }
         ],
-        'settings_block': [
-            {
-                'type': 'text-area',
-                'label': 'Texto en el bloque',
-                'id': 'text',
-                'default': '',
-                'required': False
-            },
+        'settings_blocks': [
             {
                 'type': 'select',
                 'label': 'Tipo de bloque',
@@ -377,7 +466,7 @@ plugin_info = {
                 'required': True,
             }
         ],
-        'settings_word': [
+        'settings_words': [
             {
                 'type': 'text',
                 'label': 'Texto en el bloque',
@@ -386,5 +475,25 @@ plugin_info = {
                 'required': False
             }
         ],
-    }
+    },
+    'actions': [
+        {
+            'placement': 'detail_record',
+            'record_type': ['document'],
+            'label': 'Detectar bloques de texto',
+            'roles': ['admin', 'processing', 'editor'],
+            'endpoint': 'blockProcessing',
+            'icon': 'BorderOuter,TextFields',
+            'extraOpts': [
+                {
+                    'type': 'checkbox',
+                    'label': 'Solo procesar la página actual',
+                    'id': 'page_only',
+                    'default': False,
+                    'required': False,
+                },
+            ]
+        },
+        
+    ]
 }
